@@ -1,0 +1,106 @@
+library(shiny)
+library(plm)
+library(DT)
+library(readxl)
+library(haven)
+
+ui <- fluidPage(
+  titlePanel("패널 데이터 회귀분석 with plm"),
+  sidebarLayout(
+    sidebarPanel(
+      radioButtons("data_source", "데이터 소스 선택",
+                   choices = c("파일 업로드", "내장 데이터셋 사용")),
+      conditionalPanel(
+        condition = "input.data_source == '파일 업로드'",
+        fileInput("file", "Excel, CSV, 또는 Stata 파일 선택",
+                  accept = c(".csv", ".xlsx", ".xls", ".dta")),
+        checkboxInput("header", "헤더 포함 여부", TRUE),
+        radioButtons("sep", "구분자 선택",
+                     choices = c(Comma = ",",
+                                 Semicolon = ";",
+                                 Tab = "\t"),
+                     selected = ",")
+      ),
+      conditionalPanel(
+        condition = "input.data_source == '내장 데이터셋 사용'",
+        selectInput("dataset", "데이터셋 선택",
+                    choices = data(package = "plm")$results[, "Item"])
+      ),
+      uiOutput("id_var"),
+      uiOutput("time_var"),
+      uiOutput("dep_var"),
+      uiOutput("indep_vars"),
+      uiOutput("model_type"),
+      actionButton("run", "회귀분석 실행")
+    ),
+    mainPanel(
+      tabsetPanel(
+        tabPanel("데이터", DTOutput("table")),
+        tabPanel("회귀분석 결과", verbatimTextOutput("results"))
+      )
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  data_reactive <- reactive({
+    req(input$data_source)
+    if (input$data_source == "파일 업로드") {
+      req(input$file)
+      ext <- tools::file_ext(input$file$name)
+      switch(ext,
+             csv = read.csv(input$file$datapath, header = input$header, sep = input$sep),
+             xlsx = read_excel(input$file$datapath),
+             xls = read_excel(input$file$datapath),
+             dta = read_dta(input$file$datapath),
+             validate("유효하지 않은 파일입니다. .csv, .xlsx, .xls, 또는 .dta 파일을 업로드해주세요.")
+      )
+    } else if (input$data_source == "내장 데이터셋 사용") {
+      req(input$dataset)
+      data(list = input$dataset, package = "plm")
+      get(input$dataset)
+    }
+  })
+  
+  output$table <- renderDT({
+    datatable(data_reactive())
+  })
+  
+  observeEvent(data_reactive(), {
+    data <- data_reactive()
+    vars <- names(data)
+    output$id_var <- renderUI({
+      selectInput("id_var_select", "ID 변수 선택", choices = vars)
+    })
+    output$time_var <- renderUI({
+      selectInput("time_var_select", "시간 변수 선택", choices = vars)
+    })
+    output$dep_var <- renderUI({
+      selectInput("dep_var_select", "종속 변수 선택", choices = vars)
+    })
+    output$indep_vars <- renderUI({
+      selectInput("indep_vars_select", "독립 변수 선택",
+                  choices = vars, multiple = TRUE)
+    })
+    output$model_type <- renderUI({
+      selectInput("model_type_select", "모델 유형 선택",
+                  choices = c("within", "random", "between", "pooling"),
+                  selected = "within")
+    })
+  })
+  
+  regression_result <- eventReactive(input$run, {
+    data <- data_reactive()
+    req(input$id_var_select, input$time_var_select, input$dep_var_select, input$indep_vars_select)
+    pdata <- pdata.frame(data, index = c(input$id_var_select, input$time_var_select))
+    formula <- as.formula(paste(input$dep_var_select, "~", paste(input$indep_vars_select, collapse = "+")))
+    model <- plm(formula, data = pdata, model = input$model_type_select)
+    summary(model)
+  })
+  
+  output$results <- renderPrint({
+    req(regression_result())
+  })
+}
+
+shinyApp(ui, server)
